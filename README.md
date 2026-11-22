@@ -7,6 +7,24 @@
 
 ---
 
+## 下载（推荐直接用整合包）
+
+| 资产 | 大小 | 说明 |
+| --- | --- | --- |
+| [完整整合包（含模型）](https://github.com/ZTOLH/CapsWriter-Offline-zh/releases/download/v2.6.1-zh/CapsWriter-Offline-zh-win64-full-v2.6.1.zip) | 553 MB | **解压即用**，客户端 + 服务端 + 已内置 SenseVoice 模型 + 脚本 |
+| [程序包（不含模型）](https://github.com/ZTOLH/CapsWriter-Offline-zh/releases/download/v2.6.1-zh/CapsWriter-Offline-zh-win64-no-model-v2.6.1.zip) | 139 MB | 已打好补丁，模型按包内 `需要模型.txt` 自行下载 |
+| [补丁包](https://github.com/ZTOLH/CapsWriter-Offline-zh/releases/download/v2.6.1-zh/CapsWriter-Offline-zh-patch-v2.6.1.zip) | 37 KB | `patch.diff` + `overlay/` 源码 + `scripts/` + 文档 |
+| [SHA256SUMS.txt](https://github.com/ZTOLH/CapsWriter-Offline-zh/releases/download/v2.6.1-zh/SHA256SUMS.txt) | 1 KB | 三个包的 sha256 |
+
+```
+0c18a0460a733207eb9a8bda5011a17394355cb6aa9c8616fad7bf9bd57e299c  CapsWriter-Offline-zh-win64-full-v2.6.1.zip
+b5a74fab1eb887e78940ee3ca05ce02df451d140ec67b2a28e8c7257fb5ede02  CapsWriter-Offline-zh-win64-no-model-v2.6.1.zip
+762406b7853ae733ca8c720ef179dd6762345680fac4b8bd0df037fa93257d38  CapsWriter-Offline-zh-patch-v2.6.1.zip
+```
+
+解压到**非系统盘**任意目录（例如 `E:\CapsWriter-Offline`），双击 `启动语音输入.bat`，之后在任意输入框按 **Ctrl+空格** 说话、再按一下结束即可上屏。
+
+---
 ## 功能与改动一览
 
 | 功能 | 原版 v2.6 | 本补丁 |
