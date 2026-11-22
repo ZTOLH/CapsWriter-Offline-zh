@@ -1,0 +1,333 @@
+--- a/CapsWriter-Offline-Client/config_client.py
++++ b/CapsWriter-Offline-Client/config_client.py
+@@ -17,23 +17,17 @@
+     # 快捷键配置列表
+     shortcuts = [
+         {
+-            'key': 'caps_lock',     # 监听大写锁定键
++            'key': 'ctrl+space',    # Ctrl + 空格：按一下开始录音，再按一下停止录音
+             'type': 'keyboard',     # 是键盘快捷键
+-            'suppress': True,      # 阻塞按键（短按会补发）
+-            'hold_mode': True,      # 长按模式
++            'suppress': True,       # 命中组合键时吞掉空格，避免编辑器多打一个空格
++            'hold_mode': False,     # 单击（切换）模式
+             'enabled': True         # 启用此快捷键
+-        },
+-        {
+-            'key': 'x2',
+-            'type': 'mouse',
+-            'suppress': True,
+-            'hold_mode': True,
+-            'enabled': True
+         },
+     ]
+ 
+     threshold    = 0.3          # 快捷键触发阈值（秒）
+ 
++    sound_cue    = True         # 开始/结束录音时播放「叮」提示音
+     paste        = False        # 是否以写入剪切板然后模拟 Ctrl-V 粘贴的方式输出结果
+     restore_clip = True         # 模拟粘贴后是否恢复剪贴板
+     paste_apps   = ['WeiXin.exe', 'Telegram.exe']  # 匹配时强制粘贴
+@@ -44,7 +38,7 @@
+     audio_name_len = 20         # 将录音识别结果的前多少个字存储到录音文件名中，建议不要超过200
+     
+     context = ''                # 提示词上下文，用于辅助 Fun-ASR-Nano 模型识别（例如输入人名、地名、专业术语等）
+-    language = 'auto'           # 识别语言：'auto', 'chinese', 'english', 'japanese' 等（各引擎支持范围不同）
++    language = 'chinese'           # 识别语言：'auto', 'chinese', 'english', 'japanese' 等（各引擎支持范围不同）
+ 
+     trash_punc = '，。,.'       # 识别结果要消除的末尾标点
+     trash_punc_thresh = 8       # 识别结果的单词数量低于阈值时，强制去除末尾标点
+--- a/CapsWriter-Offline-Client/core/client/shortcut/shortcut_manager.py
++++ b/CapsWriter-Offline-Client/core/client/shortcut/shortcut_manager.py
+@@ -55,6 +55,9 @@
+         # 快捷键任务映射（key -> ShortcutTask）
+         self.tasks: Dict[str, ShortcutTask] = {}
+ 
++        # 组合键任务映射（主键名 -> (task, 修饰键集合)）
++        self.combo_tasks: Dict[str, tuple] = {}
++
+         # 线程池
+         self._pool = ThreadPoolExecutor(max_workers=4)
+ 
+@@ -87,9 +90,50 @@
+             task._manager_ref = lambda: self  # 弱引用，用于回调
+             task.pool = self._pool
+             task.threshold = shortcut.get_threshold(Config.threshold)
+-            self.tasks[shortcut.key] = task
++            key = shortcut.key
++            if '+' in key:
++                parts = [p.strip() for p in key.split('+') if p.strip()]
++                mods = frozenset(parts[:-1])
++                main_key = parts[-1]
++                self.combo_tasks[main_key] = (task, mods)
++                logger.info(f"[{key}] 已注册组合键：{'+'.join(sorted(mods))} + {main_key}")
++            else:
++                self.tasks[key] = task
+ 
+     # ========== 监听器创建 ==========
++
++    @staticmethod
++    def _mods_down() -> frozenset:
++        """获取当前物理按下的修饰键集合（ctrl/shift/alt/win）"""
++        import ctypes
++        u = ctypes.windll.user32
++        down = set()
++        for name, vk in (('ctrl', 0x11), ('shift', 0x10), ('alt', 0x12), ('win', 0x5B)):
++            if u.GetAsyncKeyState(vk) & 0x8000:
++                down.add(name)
++        return frozenset(down)
++
++    def _handle_combo(self, key_name: str, msg) -> None:
++        """处理组合键（如 ctrl+space）事件"""
++        task, mods = self.combo_tasks[key_name]
++        down = self._mods_down()
++        matched = (mods <= down) and not (down - mods)
++
++        if msg in KEY_DOWN_MESSAGES:
++            logger.debug(f"组合键检查 [{key_name}] 按下时的修饰键={sorted(down)}, 匹配={matched}")
++            if not matched:
++                return
++            self._event_handler.handle_keydown(key_name, task)
++            if task.shortcut.suppress and self.keyboard_listener:
++                logger.debug(f"组合键命中，已吞掉主键 [{key_name}]，不向应用层发送")
++                self.keyboard_listener.suppress_event()
++            return
++
++        # 抬起：只要这个快捷键的任务还在进行中就收尾（用户可能先松开 ctrl）
++        if task.pressed or task.is_recording:
++            self._event_handler.handle_keyup(key_name, task)
++            if matched and task.shortcut.suppress and self.keyboard_listener:
++                self.keyboard_listener.suppress_event()
+ 
+     def create_keyboard_filter(self):
+         """创建键盘事件过滤器"""
+@@ -104,6 +148,11 @@
+             if self._check_emulating(key_name, msg):
+                 return True
+             if self._check_restoring(key_name, msg):
++                return True
++
++            # 组合键优先（如 ctrl+space）
++            if key_name in self.combo_tasks:
++                self._handle_combo(key_name, msg)
+                 return True
+ 
+             # 查找匹配的快捷键
+@@ -302,7 +351,7 @@
+                 self.mouse_listener = None
+ 
+         # 取消所有任务
+-        for task in self.tasks.values():
++        for task in list(self.tasks.values()) + [t for t, _ in self.combo_tasks.values()]:
+             if task.is_recording:
+                 task.cancel()
+ 
+--- a/CapsWriter-Offline-Client/core/client/shortcut/event_handler.py
++++ b/CapsWriter-Offline-Client/core/client/shortcut/event_handler.py
+@@ -38,23 +38,22 @@
+                 task.launch()
+             return
+ 
+-        # 单击模式
+-        if task.released:
+-            from threading import Event
+-            task.pressed = True
+-            task.released = False
+-            task.event = Event()  # 创建新事件对象
+-            self.pool.submit(self._count_down, task)
+-            self.pool.submit(self._manage_task, task)
++        # 单击（切换）模式：按下就切换录音开关，与按住时长无关
++        if task.pressed:
++            return  # 按住不放时系统会重复发送按下消息，忽略
++        task.pressed = True
++        task.released = False
++        if task.is_recording:
++            task.finish()
++        else:
++            task.launch()
+ 
+     def handle_keyup(self, key_name, task) -> None:
+         """处理按键释放事件"""
+         # 单击模式
+         if not task.shortcut.hold_mode:
+-            if task.pressed:
+-                task.pressed = False
+-                task.released = True
+-                task.event.set()
++            task.pressed = False
++            task.released = True
+             return
+ 
+         # 长按模式
+--- a/CapsWriter-Offline-Client/core/client/shortcut/task.py
++++ b/CapsWriter-Offline-Client/core/client/shortcut/task.py
+@@ -13,6 +13,7 @@
+ 
+ from . import logger
+ from core.tools.my_status import Status
++from core.client.audio.cue import play_cue
+  
+ if TYPE_CHECKING:
+     from core.client.shortcut.shortcut_config import Shortcut
+@@ -73,6 +74,7 @@
+     def launch(self) -> None:
+         """启动录音任务"""
+         logger.info(f"[{self.shortcut.key}] 触发：开始录音")
++        play_cue('start')
+ 
+         # 记录开始时间
+         self.recording_start_time = time.time()
+@@ -111,6 +113,7 @@
+     def finish(self) -> None:
+         """完成录音任务"""
+         logger.info(f"[{self.shortcut.key}] 释放：完成录音")
++        play_cue('stop')
+ 
+         self.is_recording = False
+         self.state.stop_recording()
+--- a/CapsWriter-Offline-Client/core/client/output/text_output.py
++++ b/CapsWriter-Offline-Client/core/client/output/text_output.py
+@@ -60,6 +60,10 @@
+         """
+         if not text or not Config.trash_punc:
+             return text
++
++        # 单个标点的结果（通常是没说话时的静音）直接视为空，避免往光标处插入一个孤立的句号
++        if len(text) == 1 and text in Config.trash_punc:
++            return ""
+ 
+         # 检查是否在强制去标点的应用中
+         force_strip = False
+--- /dev/null
++++ b/CapsWriter-Offline-Client/core/client/audio/cue.py
+@@ -0,0 +1,119 @@
++# coding: utf-8
++"""
++录音提示音模块
++
++按下快捷键开始录音、再按一次结束录音时，各播放一声「叮」，让用户不看屏幕也知道
++当前是"正在录音"还是"已经停止"。
++
++- 音效不依赖任何素材文件：首次使用时用正弦波 + 指数衰减包络现场合成，
++  写到客户端目录下的 cue\start.wav 与 cue\stop.wav，之后直接播放。
++- 播放使用 winsound 的异步模式，不会阻塞快捷键回调。
++- 想关掉提示音：把 config_client.py 里的 sound_cue 改成 False，重启客户端即可。
++"""
++
++from __future__ import annotations
++
++import math
++import struct
++import wave
++from pathlib import Path
++from threading import Lock
++
++from . import logger
++
++_SAMPLE_RATE = 44100
++_GENERATE_LOCK = Lock()
++_CACHE: dict[str, Path] = {}
++
++# 开始 / 结束 两种提示音的分音频率与时长（低音更"沉"，高音更"亮"）
++_SPECS = {
++    'start': {'freqs': (1046.5, 2093.0), 'duration': 0.16, 'decay': 11.0},
++    'stop': {'freqs': (783.99, 1567.98), 'duration': 0.30, 'decay': 7.0},
++}
++
++
++def _cue_dir() -> Path:
++    """提示音缓存目录（客户端根目录下的 cue 文件夹）"""
++    root = Path(__file__).resolve().parents[3]
++    d = root / 'cue'
++    d.mkdir(parents=True, exist_ok=True)
++    return d
++
++
++def _bell_wav(path: Path, freqs, duration: float, decay: float, amp: float = 0.32) -> None:
++    """合成一声钟响：几个分音叠加 + 8ms 起音 + 指数衰减，写成 16bit 单声道 wav"""
++    n = int(_SAMPLE_RATE * duration)
++    frames = bytearray()
++    two_pi = 2.0 * math.pi
++    for i in range(n):
++        t = i / _SAMPLE_RATE
++        attack = min(1.0, t / 0.008)          # 起音，避免爆音
++        env = attack * math.exp(-t * decay)   # 指数衰减
++        s = 0.0
++        for k, f in enumerate(freqs):
++            s += math.sin(two_pi * f * t) / (k + 1)
++        v = int(max(-1.0, min(1.0, s * env * amp)) * 32767)
++        frames += struct.pack('<h', v)
++    with wave.open(str(path), 'wb') as w:
++        w.setnchannels(1)
++        w.setsampwidth(2)
++        w.setframerate(_SAMPLE_RATE)
++        w.writeframes(bytes(frames))
++
++
++def _cue_file(kind: str) -> Path | None:
++    """取（必要时生成）提示音文件路径"""
++    spec = _SPECS.get(kind)
++    if spec is None:
++        return None
++    with _GENERATE_LOCK:
++        cached = _CACHE.get(kind)
++        if cached is not None and cached.exists():
++            return cached
++        try:
++            path = _cue_dir() / f'{kind}.wav'
++            _bell_wav(path, spec['freqs'], spec['duration'], spec['decay'])
++            _CACHE[kind] = path
++            return path
++        except Exception as e:
++            logger.warning(f"生成提示音失败: {e}")
++            return None
++
++
++def _enabled() -> bool:
++    """读取配置开关（config_client.sound_cue）"""
++    try:
++        from config_client import ClientConfig
++        return bool(getattr(ClientConfig, 'sound_cue', True))
++    except Exception:
++        return True
++
++
++def play_cue(kind: str) -> None:
++    """
++    播放提示音（异步，不阻塞调用线程）
++
++    Args:
++        kind: 'start' 开始录音；'stop' 结束录音
++    """
++    if not _enabled():
++        return
++    path = _cue_file(kind)
++    if path is None:
++        return
++    try:
++        import ctypes
++        # 直接调用 winmm.PlaySoundW（异步、失败不回落系统提示音），
++        # 客户端内置的解释器没有 winsound 模块，只能走 Win32 API。
++        SND_FILENAME = 0x00020000
++        SND_NODEFAULT = 0x00000002
++        SND_ASYNC = 0x00000001
++        ok = ctypes.windll.winmm.PlaySoundW(
++            str(path),
++            None,
++            SND_FILENAME | SND_NODEFAULT | SND_ASYNC,
++        )
++        if not ok:
++            logger.debug(f"播放提示音失败: PlaySoundW 返回 0, {path}")
++    except Exception as e:
++        logger.debug(f"播放提示音失败: {e}")
+--- a/CapsWriter-Offline/config_server.py
++++ b/CapsWriter-Offline/config_server.py
+@@ -14,7 +14,7 @@
+     port = '6016'
+ 
+     # 语音模型选择：'qwen_asr', 'fun_asr_nano', 'sensevoice', 'paraformer'
+-    model_type = 'qwen_asr'
++    model_type = 'sensevoice'
+ 
+     format_num = True       # 输出时是否将中文数字转为阿拉伯数字
+     format_spell = True     # 输出时是否调整中英之间的空格
