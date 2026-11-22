@@ -1,0 +1,114 @@
+CapsWriter-Offline 语音输入 · 使用说明
+安装时间：2026-11-21    安装位置：E 盘（不在 C 盘）
+
+==================== 一句话上手 ====================
+在任何能打字的窗口里【按一下 Ctrl + 空格】开始录音，说完【再按一下 Ctrl + 空格】结束录音，
+文字大约 0.3～1 秒后自动出现在光标处。
+
+  Ctrl + 空格  →  开始录音（不用一直按着，按一下就行）「叮」高音
+  Ctrl + 空格  →  再按一下结束录音，开始识别并上屏「叮」低音
+
+长按也照样有效：按住 Ctrl+空格 一直不放也没关系，录音会一直继续，松手后再按一下才结束。
+中断按键：【Esc】（打断正在进行的输出 / 停止大模型润色）
+
+注意：
+· CapsLock 大写锁定键已不再触发录音，恢复成普通的大写锁定功能。
+· Ctrl + 空格 已被本软件占用：网页/编辑器的「自动补全弹窗」等 Ctrl+空格 快捷键不再生效。
+
+==================== 现在怎么启动 ====================
+已经配置好【开机自动启动】，重启电脑后不用做任何事，1～2 秒内就能直接按 Ctrl+空格说话。
+
+桌面上有两个快捷方式：
+  「CapsWriter 语音输入」  ← 手动启动/确保在运行（重复双击无副作用）
+  「CapsWriter 停止」      ← 完全退出服务端、客户端和守护进程
+也可以双击：E:\CapsWriter-Offline\启动语音输入.bat
+
+启动后不会出现任何黑色命令行窗口（后台静默运行）。
+开机自启的位置：%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\CapsWriter 语音输入（自启动）.lnk
+
+判定是否就绪：右下角托盘有 CapsWriter 图标；日志末行为
+  「WebSocket 建立成功: ws://127.0.0.1:6016」
+
+==================== 自动守护（重要） ====================
+后台有一个守护进程 supervisor（supervisor.ps1，由 wscript 隐藏运行），每 4 秒检查一次：
+  · 服务端/客户端进程不在了      → 自动重新拉起
+  · 服务端的进程树被破坏（只剩残骸进程，端口还开着但其实不能识别）
+                                → 杀掉残骸，整套重启
+  · 服务端日志出现 BrokenPipe / WinError 232 → 自动重启服务端并让客户端重连
+  · 客户端进程在但连不上服务端    → 自动重启客户端
+  · 想让守护暂停：在 E:\CapsWriter-Offline\ 下新建空文件 pause.flag；删掉即恢复
+  · 守护日志：E:\CapsWriter-Offline\logs\supervisor.log
+  · 想彻底关掉：双击桌面「CapsWriter 停止」
+
+==================== 常用功能 ====================
+1) 语音输入：Ctrl+空格 开始 / Ctrl+空格 结束，适合说长句。
+   默认会去掉句末多余的逗号句号；完全没说话时不会往光标处插标点。
+2) 文件转录（把音频/视频变成字幕）：把 .mp3/.wav/.mp4 等文件直接拖到
+   E:\CapsWriter-Offline\client\CapsWriter-Offline-Client\start_client.exe 图标上，
+   同目录会生成 同名 .txt（纯文本）、.srt（字幕）、.json（带时间戳）。
+   注意：文件转录会临时顶掉常驻客户端，转录结束后守护会自动把常驻客户端拉回来。
+3) 热词：E:\CapsWriter-Offline\client\CapsWriter-Offline-Client\hot.txt
+   一行一个词，比如「寄递网络」，保存后立即生效（下次识别强制纠正成这个词）。
+   高级规则替换看 hot-rule.txt。
+4) 托盘图标右键菜单：可快速添加热词、复制最近结果、退出。
+5) 自动存档：每句话的录音存在 client 目录的 年\月\assets\ 下，
+   识别文本按日期存成 年\月\日.md（日记），误删也能找回。
+
+==================== 已做的个性化设置 ====================
+- 快捷键：只有 Ctrl+空格 一个，「单击切换」模式（按一下开始，再按一下结束），
+  按下就切换、与按住时长无关；按住不松时系统重复的按键消息会被忽略，不会来回翻转。
+  改键方法：config_client.py 里的 shortcuts 列表，key 可以写 'ctrl+space'、'f9'、'alt+q' 等。
+- 识别语言：中文（config_client.py 里的 language = 'chinese'，
+  想改成 auto 自动判断中英混说，把这个值改成 'auto' 后重启客户端）
+- 引擎：SenseVoice-Small（config_server.py 里 model_type = 'sensevoice'），
+  CPU 下 20 秒语音约 0.6 秒出结果，中文准确率好，自带标点。
+- 输出方式：模拟打字（paste = False）。微信、Telegram 会自动改用粘贴方式（已在 paste_apps 里）。
+- 提示音：开始录音 / 结束录音各响一声「叮」（开始用高音 1046Hz，结束用低音 784Hz，带衰减的钟声）。
+  音效是程序自己合成的，文件在 client 目录的 cue\start.wav 与 cue\stop.wav，删掉会自动重建。
+  不想要声音：把 config_client.py 里的 sound_cue 改成 False，重启客户端即可。
+
+- 为满足「Ctrl+空格 切换录音」改过源码（原版只支持单键、且没有真正的组合键支持）：
+  1) core/client/shortcut/shortcut_manager.py —— 新增组合键识别（修饰键 + 主键），
+     只有在 Ctrl 物理按下时才吞掉空格，平时打空格不受影响。
+  2) core/client/output/text_output.py —— 没说话（识别结果只有标点）时不输出任何字符，
+     原版会往光标处插一个句号「。」。
+  3) core/client/shortcut/event_handler.py —— 单击模式的切换逻辑重写：原版按下后 0.24 秒内
+     没松手就会把录音取消掉（按得稍慢就没反应），现改为按下立即切换、长按不受影响。
+  4) core/client/audio/cue.py（新增）—— 开始/结束录音的「叮」提示音，
+     由 task.py 的 launch()/finish() 调用；客户端内置解释器没有 winsound 模块，
+     所以直接调 winmm.PlaySoundW。
+  5) config_client.py —— shortcuts 改成 ctrl+space 单击切换，删掉会互相打断的鼠标侧键 x2，
+     新增 sound_cue 开关。
+  6) config_server.py —— model_type 从 qwen_asr 改成 sensevoice。
+  改动前的原文件备份在同目录的 *.orig 文件里；完整补丁见 patch.diff。软件升级会覆盖这些改动。
+
+==================== 常见问题 ====================
+Q: 按 Ctrl+空格 没反应？
+   A: 现在有守护进程，正常情况下会自动恢复。可以先看 logs\supervisor.log 最近几行；
+      还不行就双击桌面「CapsWriter 停止」再双击「CapsWriter 语音输入」。
+Q: 按 Ctrl+空格 后，网页/编辑器里多出一个空格？
+   A: 正常不会。日志里若出现「组合键命中，已吞掉主键」就表示空格没有发给应用。
+Q: 按了 Ctrl+空格，也看到「开始录音」，但说完没有任何字？
+   A: 先看服务端是否真的在工作。服务端正常时有 3 个 start_server.exe 进程
+      （启动器 + 约 1GB 的模型进程 + 约 60MB 的管理进程）。
+      手动结束其中任何一个，之后所有语音都会失败，日志出现
+      「BrokenPipeError: [WinError 232] 管道正在被关闭」——守护进程现在会自动重启它。
+Q: 说话出字但不准？
+   A: 麦克风远一点、环境嘈杂都会掉准确率；把常用专有名词写进 hot.txt 效果立竿见影。
+Q: 服务端占内存？
+   A: 模型常驻约 1GB 内存，这是正常的；双击「CapsWriter 停止」即可释放。
+Q: 完全离线吗？
+   A: 是。识别全在本机完成，不联网（除非你启用大模型角色功能）。
+
+==================== 目录速查 ====================
+E:\CapsWriter-Offline\
+├─ server\CapsWriter-Offline\        识别服务端（模型在 models\SenseVoice-Small\）
+├─ client\CapsWriter-Offline-Client\ 客户端（配置 config_client.py、热词 hot.txt）
+├─ supervisor.ps1                     守护进程（自动拉起 / 自动修复）
+├─ start_supervisor.vbs               隐藏窗口启动守护
+├─ stop_caps.ps1 / stop_caps.bat      全部停止
+├─ logs\supervisor.log               守护日志
+├─ patch.diff                        本机所有源码改动的统一补丁
+├─ test\                              自测用的录音样例（可整个删除）
+├─ 启动语音输入.bat                   一键启动
+└─ 使用说明.txt                       本文件
